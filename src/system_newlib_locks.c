@@ -38,17 +38,26 @@ struct __lock __lock___dd_hash_mutex;
 struct __lock __lock___arc4random_mutex;
 ///@endcond
 
+/** Size of the dynamic lock pool. Every concurrently open FILE consumes one
+ * slot (each wav64 stream and each active t3d animation holds a FILE), so
+ * asset-heavy applications exhaust a 64-slot pool; worse, the exhaustion
+ * assert can fire while the caller holds the stdio/debug lock and deadlocks
+ * silently instead of reporting. */
+#define LIBC_MUTEX_POOL 256
+
 /** Pool of dynamically allocated lists  */
-static struct __lock __libc_mutexes[64];
-static uint64_t __libc_mutexes_bitmap = 0;
+static struct __lock __libc_mutexes[LIBC_MUTEX_POOL];
+static uint64_t __libc_mutexes_bitmap[LIBC_MUTEX_POOL / 64];
 extern bool __kernel;
 
 /** Alloca a dynamic lock from our static pool */
 static struct __lock* __alloc_libc_mutex(void) {
-    for (int i = 0; i < 64; i++) {
-        if (!(__libc_mutexes_bitmap & (1ull << i))) {
-            __libc_mutexes_bitmap |= (1ull << i);
-            return &__libc_mutexes[i];
+    for (int w = 0; w < LIBC_MUTEX_POOL / 64; w++) {
+        for (int i = 0; i < 64; i++) {
+            if (!(__libc_mutexes_bitmap[w] & (1ull << i))) {
+                __libc_mutexes_bitmap[w] |= (1ull << i);
+                return &__libc_mutexes[w * 64 + i];
+            }
         }
     }
     assert(0);
@@ -58,7 +67,7 @@ static struct __lock* __alloc_libc_mutex(void) {
 /** Free a dynamic lock from our static pool */
 static void __free_libc_mutex(struct __lock* lock) {
     int i = lock - __libc_mutexes;
-    __libc_mutexes_bitmap &= ~(1ull << i);
+    __libc_mutexes_bitmap[i / 64] &= ~(1ull << (i % 64));
 }
 
 ///@cond
